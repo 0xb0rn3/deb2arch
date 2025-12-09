@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # deb2arch - Interactive .deb to Arch Package Converter
 # Engineered by: oxbv1 | 0xb0rn3
