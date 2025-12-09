@@ -1,82 +1,54 @@
 #!/usr/bin/env bash
 set -e
 
-# Version info
-VERSION="2.0.0"
+VERSION="0.0.1"
 REPO_URL="https://github.com/0xb0rn3/deb2arch"
-SCRIPT_PATH="$(readlink -f "$0")"
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 
-# Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-if [ -f "${SCRIPT_DIR}/integration" ]; then
-    source "${SCRIPT_DIR}/integration"
-    install_enhancement_module 2>/dev/null
-    ENHANCEMENTS_AVAILABLE=$?
-else
-    ENHANCEMENTS_AVAILABLE=1
-fi
-
-# Check for updates
-check_for_updates() {
-    # Only check if we're in a git repo
+check_updates() {
     if [ -d "${SCRIPT_DIR}/.git" ]; then
         echo -ne "${CYAN}🔍 Checking for updates...${NC}"
         
-        # Fetch latest from origin
         git -C "${SCRIPT_DIR}" fetch origin main 2>/dev/null || {
-            echo -e "\r${YELLOW}⚠️  Could not check for updates (no internet?)${NC}"
+            echo -e "\r${YELLOW}⚠️  Could not check for updates${NC}"
             return
         }
         
-        # Compare local and remote
         LOCAL=$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null)
         REMOTE=$(git -C "${SCRIPT_DIR}" rev-parse origin/main 2>/dev/null)
         
         if [ "$LOCAL" != "$REMOTE" ]; then
-            echo -e "\r${YELLOW}📦 Update available!${NC}                    "
-            echo -e "${GREEN}New version available on GitHub${NC}"
+            echo -e "\r${YELLOW}📦 Update available!${NC}"
+            echo -e "${GREEN}New version on GitHub${NC}"
             echo ""
             read -p "Update now? [Y/n]: " do_update
             do_update=${do_update:-y}
             
             if [[ "$do_update" =~ ^[Yy]$ ]]; then
                 echo -e "${CYAN}Updating...${NC}"
+                git -C "${SCRIPT_DIR}" stash push -m "Auto-stash" 2>/dev/null || true
                 
-                # Stash local changes if any
-                git -C "${SCRIPT_DIR}" stash push -m "Auto-stash before update" 2>/dev/null || true
-                
-                # Pull latest
                 if git -C "${SCRIPT_DIR}" pull origin main; then
                     echo -e "${GREEN}✅ Updated successfully!${NC}"
-                    echo -e "${CYAN}Restarting with new version...${NC}"
-                    echo ""
-                    
-                    # Re-exec with new version
-                    exec "$SCRIPT_PATH" "$@"
+                    echo -e "${CYAN}Restarting...${NC}"
+                    exec "$0" "$@"
                 else
                     echo -e "${RED}❌ Update failed${NC}"
-                    echo "Run manually: cd ${SCRIPT_DIR} && git pull"
                 fi
-            else
-                echo "Update skipped. Run 'git pull' in ${SCRIPT_DIR} to update later."
-                echo ""
             fi
         else
-            echo -e "\r${GREEN}✅ You're on the latest version${NC}          "
+            echo -e "\r${GREEN}✅ Latest version${NC}"
             echo ""
         fi
     fi
 }
 
-# Handle command line arguments
 case "${1:-}" in
     --version|-v)
         echo "deb2arch version $VERSION"
@@ -84,7 +56,7 @@ case "${1:-}" in
         exit 0
         ;;
     --update|-u)
-        check_for_updates "$@"
+        check_updates "$@"
         exit 0
         ;;
     --help|-h)
@@ -93,30 +65,16 @@ case "${1:-}" in
         echo "Usage: $0 [OPTIONS]"
         echo ""
         echo "Options:"
-        echo "  -v, --version    Show version information"
-        echo "  -u, --update     Check for updates and update if available"
-        echo "  -h, --help       Show this help message"
-        echo ""
-        echo "Examples:"
-        echo "  $0                    # Run normally (auto-checks for updates)"
-        echo "  $0 --update           # Force update check"
-        echo "  $0 --version          # Show version"
+        echo "  -v, --version    Show version"
+        echo "  -u, --update     Check for updates"
+        echo "  -h, --help       Show this help"
         exit 0
         ;;
 esac
 
-echo "╔════════════════════════════════════════════════╗"
-echo "║      deb2arch - .deb to Arch Converter        ║"
-echo "║      Engineered by: oxbv1 | 0xb0rn3           ║"
-echo "║      Version: $VERSION                           ║"
-echo "╚════════════════════════════════════════════════╝"
-echo ""
+check_updates "$@"
 
-# Auto-check for updates (non-blocking)
-check_for_updates "$@"
-
-# Install core dependencies
-install_core_deps() {
+install_deps() {
     local missing=()
     
     command -v ar &>/dev/null || missing+=("binutils")
@@ -126,532 +84,14 @@ install_core_deps() {
     command -v readelf &>/dev/null || missing+=("binutils")
     
     if [ ${#missing[@]} -gt 0 ]; then
-        echo -e "${YELLOW}Installing core dependencies: ${missing[*]}${NC}"
+        echo -e "${YELLOW}Installing dependencies: ${missing[*]}${NC}"
         sudo pacman -S --needed --noconfirm "${missing[@]}" || {
-            echo -e "${RED}Failed to install core dependencies${NC}"
+            echo -e "${RED}Failed to install dependencies${NC}"
             exit 1
         }
     fi
 }
 
-install_core_deps
+install_deps
 
-# Python dependency analyzer with pip fallback
-create_dependency_analyzer() {
-    cat > /tmp/analyzer << 'PYEOF'
-#!/usr/bin/env python3
-import subprocess
-import sys
-import re
-from pathlib import Path
-
-# Comprehensive library to Arch package mapping
-LIB_TO_ARCH = {
-    # Qt
-    'libQt5Core': 'qt5-base',
-    'libQt5Gui': 'qt5-base',
-    'libQt5Widgets': 'qt5-base',
-    'libQt5Network': 'qt5-base',
-    'libQt5DBus': 'qt5-base',
-    'libQt6Core': 'qt6-base',
-    'libQt6Gui': 'qt6-base',
-    'libQt6Widgets': 'qt6-base',
-    
-    # GTK/GNOME
-    'libgtk-3': 'gtk3',
-    'libgtk-4': 'gtk4',
-    'libgdk-3': 'gtk3',
-    'libglib-2': 'glib2',
-    'libgio-2': 'glib2',
-    'libgobject-2': 'glib2',
-    'libcairo': 'cairo',
-    'libpango': 'pango',
-    'libatk': 'atk',
-    'libgdk_pixbuf': 'gdk-pixbuf2',
-    
-    # X11/Wayland
-    'libX11': 'libx11',
-    'libXext': 'libxext',
-    'libXrender': 'libxrender',
-    'libxcb': 'libxcb',
-    'libxcb-cursor': 'xcb-util-cursor',
-    'libxcb-icccm': 'xcb-util-wm',
-    'libxcb-image': 'xcb-util-image',
-    'libxcb-keysyms': 'xcb-util-keysyms',
-    'libxcb-render-util': 'xcb-util-renderutil',
-    'libxcb-util': 'xcb-util',
-    'libxkbcommon': 'libxkbcommon',
-    'libxkbcommon-x11': 'libxkbcommon-x11',
-    'libwayland-client': 'wayland',
-    'libwayland-cursor': 'wayland',
-    'libwayland-egl': 'wayland',
-    
-    # Crypto/Security
-    'libssl': 'openssl',
-    'libcrypto': 'openssl',
-    
-    # Networking
-    'libcurl': 'curl',
-    'libcurl-gnutls': 'curl',
-    
-    # Database
-    'libsqlite3': 'sqlite',
-    'libpq': 'postgresql-libs',
-    'libmysqlclient': 'mariadb-libs',
-    'libmariadb': 'mariadb-libs',
-    
-    # Media
-    'libavcodec': 'ffmpeg',
-    'libavformat': 'ffmpeg',
-    'libavutil': 'ffmpeg',
-    'libswscale': 'ffmpeg',
-    'libswresample': 'ffmpeg',
-    'libSDL2': 'sdl2',
-    'libpulse': 'libpulse',
-    'libasound': 'alsa-lib',
-    
-    # Graphics
-    'libGL': 'mesa',
-    'libGLX': 'mesa',
-    'libEGL': 'mesa',
-    'libgbm': 'mesa',
-    'libdrm': 'libdrm',
-    'libvulkan': 'vulkan-icd-loader',
-    
-    # Fonts/Text
-    'libfontconfig': 'fontconfig',
-    'libfreetype': 'freetype2',
-    'libharfbuzz': 'harfbuzz',
-    
-    # Compression
-    'libbz2': 'bzip2',
-    'liblzma': 'xz',
-    'libz': 'zlib',
-    'libzstd': 'zstd',
-    'libbrotlidec': 'brotli',
-    'libbrotlienc': 'brotli',
-    
-    # Other
-    'libdbus-1': 'dbus',
-    'libicu': 'icu',
-    'libtiff': 'libtiff',
-    'libpng': 'libpng',
-    'libjpeg': 'libjpeg-turbo',
-    'libwebp': 'libwebp',
-}
-
-# System libraries to ignore
-SYSTEM_LIBS = {
-    'libc.so', 'libm.so', 'libpthread.so', 'libdl.so', 'librt.so',
-    'libstdc++.so', 'libgcc_s.so', 'ld-linux', 'linux-vdso.so'
-}
-
-def find_elf_files(directory):
-    """Find all ELF binaries in directory"""
-    elf_files = []
-    for path in Path(directory).rglob('*'):
-        if not path.is_file():
-            continue
-        try:
-            with open(path, 'rb') as f:
-                magic = f.read(4)
-                if magic == b'\x7fELF':
-                    elf_files.append(path)
-        except (IOError, OSError, PermissionError):
-            continue
-    return elf_files
-
-def get_elf_dependencies(elf_path):
-    """Extract NEEDED libraries using readelf"""
-    deps = set()
-    try:
-        result = subprocess.run(
-            ['readelf', '-d', str(elf_path)],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if result.returncode == 0:
-            for line in result.stdout.split('\n'):
-                if 'NEEDED' in line:
-                    match = re.search(r'\[(.*?)\]', line)
-                    if match:
-                        lib = match.group(1)
-                        # Skip system libraries
-                        if not any(sys_lib in lib for sys_lib in SYSTEM_LIBS):
-                            deps.add(lib)
-    except Exception as e:
-        print(f"Warning: Failed to analyze {elf_path}: {e}", file=sys.stderr)
-    return deps
-
-def map_lib_to_package(lib):
-    """Map library name to Arch package"""
-    # Check direct mapping
-    for pattern, pkg in LIB_TO_ARCH.items():
-        if pattern in lib:
-            return pkg
-    
-    # Extract base name: libNAME.so.X -> NAME
-    match = re.match(r'lib(.+?)\.so', lib)
-    if match:
-        return match.group(1)
-    
-    return None
-
-def verify_package_exists(pkg):
-    """Check if package exists in Arch repos"""
-    try:
-        result = subprocess.run(
-            ['pacman', '-Ss', f'^{pkg}$'],
-            capture_output=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except:
-        return False
-
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: analyzer.py <extracted_deb_dir>", file=sys.stderr)
-        sys.exit(1)
-    
-    extract_dir = sys.argv[1]
-    
-    print(f"Scanning for ELF binaries in {extract_dir}...", file=sys.stderr)
-    elf_files = find_elf_files(extract_dir)
-    print(f"Found {len(elf_files)} ELF files", file=sys.stderr)
-    
-    all_libs = set()
-    for elf_file in elf_files:
-        libs = get_elf_dependencies(elf_file)
-        all_libs.update(libs)
-    
-    print(f"Detected {len(all_libs)} unique libraries", file=sys.stderr)
-    
-    # Map to packages
-    packages = {}
-    for lib in sorted(all_libs):
-        pkg = map_lib_to_package(lib)
-        if pkg:
-            packages[pkg] = lib
-    
-    # Verify packages exist
-    verified = []
-    print("Verifying packages...", file=sys.stderr)
-    for pkg in sorted(packages.keys()):
-        if verify_package_exists(pkg):
-            verified.append(pkg)
-            print(f"  ✓ {pkg} (from {packages[pkg]})", file=sys.stderr)
-        else:
-            print(f"  ✗ {pkg} (not in repos, check AUR)", file=sys.stderr)
-    
-    # Output final list
-    print(','.join(verified))
-
-if __name__ == '__main__':
-    main()
-PYEOF
-    chmod +x /tmp/analyzer
-}
-
-# Extract package control info
-extract_deb_info() {
-    local deb=$1
-    
-    # Try enhanced extraction if available
-    if [ $ENHANCEMENTS_AVAILABLE -eq 0 ]; then
-        extract_deb_info_enhanced "$deb" && return 0
-    fi
-    
-    # Original fallback code (keep your existing code here)
-    local tmp=$(mktemp -d)
-    cd "$tmp"
-    ar x "$deb" 2>/dev/null || return 1
-    
-    [ -f control ] && cat control
-    cd - >/dev/null
-    rm -rf "$tmp"
-}
-
-# Debian to Arch package translation
-declare -A DEB_TO_ARCH=(
-    ["libxcb-cursor0"]="xcb-util-cursor"
-    ["libgtk-3-0"]="gtk3"
-    ["libgtk-3-dev"]="gtk3"
-    ["libnss3"]="nss"
-    ["libnotify4"]="libnotify"
-    ["libxtst6"]="libxtst"
-    ["libgbm1"]="mesa"
-    ["libssl-dev"]="openssl"
-    ["libcurl4"]="curl"
-    ["build-essential"]="base-devel"
-)
-
-translate_deb_package() {
-    local deb_pkg=$1
-    deb_pkg=$(echo "$deb_pkg" | sed 's/ *([^)]*)//g' | xargs)
-    
-    # Direct mapping
-    [ -n "${DEB_TO_ARCH[$deb_pkg]}" ] && echo "${DEB_TO_ARCH[$deb_pkg]}" && return
-    
-    # Strip -dev
-    [[ "$deb_pkg" =~ -dev$ ]] && echo "${deb_pkg%-dev}" && return
-    
-    # Strip lib prefix and version
-    [[ "$deb_pkg" =~ ^lib.*[0-9]+$ ]] && echo "$deb_pkg" | sed 's/[0-9]*$//' && return
-    
-    echo "$deb_pkg"
-}
-
-# Main script starts here
-echo "📦 Package Source"
-
-# Smart input handling - accept path directly or selection
-read -p "Enter path to .deb file (or 1/2 for menu): " input
-
-if [ "$input" == "1" ] || [ "$input" == "2" ]; then
-    if [ "$input" == "2" ]; then
-        read -p "Enter URL to .deb file: " deb_url
-        SOURCE_TYPE="url"
-        SOURCE_PATH="$deb_url"
-        DEB_FILENAME=$(basename "$deb_url")
-        CONTROL_INFO=""
-    else
-        read -p "Enter path to .deb file: " deb_path
-        deb_path=$(echo "$deb_path" | sed "s/^['\"]//; s/['\"]$//")
-        deb_path="${deb_path/#\~/$HOME}"
-        
-        [ ! -f "$deb_path" ] && echo -e "${RED}File not found: $deb_path${NC}" && exit 1
-        
-        SOURCE_TYPE="local"
-        SOURCE_PATH="$deb_path"
-        DEB_FILENAME=$(basename "$deb_path")
-        
-        echo "🔍 Extracting package info..."
-        CONTROL_INFO=$(extract_deb_info "$deb_path")
-    fi
-else
-    # Direct path input
-    deb_path=$(echo "$input" | sed "s/^['\"]//; s/['\"]$//")
-    deb_path="${deb_path/#\~/$HOME}"
-    
-    [ ! -f "$deb_path" ] && echo -e "${RED}File not found: $deb_path${NC}" && exit 1
-    
-    SOURCE_TYPE="local"
-    SOURCE_PATH="$deb_path"
-    DEB_FILENAME=$(basename "$deb_path")
-    
-    echo "🔍 Extracting package info..."
-    CONTROL_INFO=$(extract_deb_info "$deb_path")
-fi
-
-echo ""
-echo "📝 Package Information"
-
-# Get maintainer info
-read -p "👤 Maintainer [Your Name <email@example.com>]: " maintainer
-maintainer=${maintainer:-Your Name <email@example.com>}
-
-# Extract metadata
-SUGGESTED_NAME=$(echo "$DEB_FILENAME" | sed 's/_.*//; s/\.deb$//' | tr '[:upper:]' '[:lower:]')
-read -p "Package name [$SUGGESTED_NAME]: " pkgname
-pkgname=${pkgname:-$SUGGESTED_NAME}
-
-SUGGESTED_VER=$(echo "$DEB_FILENAME" | sed 's/.*_\([0-9][0-9.]*\).*/\1/')
-[ -n "$CONTROL_INFO" ] && CONTROL_VER=$(echo "$CONTROL_INFO" | grep "^Version:" | awk '{print $2}' | cut -d- -f1) && [ -n "$CONTROL_VER" ] && SUGGESTED_VER="$CONTROL_VER"
-read -p "Version [$SUGGESTED_VER]: " pkgver
-pkgver=${pkgver:-$SUGGESTED_VER}
-
-read -p "Release [1]: " pkgrel
-pkgrel=${pkgrel:-1}
-
-read -p "Architecture [x86_64]: " arch
-arch=${arch:-x86_64}
-
-[ -n "$CONTROL_INFO" ] && CONTROL_DESC=$(echo "$CONTROL_INFO" | grep "^Description:" | cut -d: -f2- | xargs)
-read -p "Description [$CONTROL_DESC]: " pkgdesc
-pkgdesc=${pkgdesc:-$CONTROL_DESC}
-
-read -p "URL: " url
-read -p "License [MIT]: " license
-license=${license:-MIT}
-
-# Dependency detection
-echo ""
-echo -e "${CYAN}🔬 Analyzing dependencies...${NC}"
-
-FINAL_DEPS=()
-if [ $ENHANCEMENTS_AVAILABLE -eq 0 ] && [ "$SOURCE_TYPE" == "local" ]; then
-    echo -e "${CYAN}🧬 Using alien-inspired dependency analysis...${NC}"
-    
-    # Extract .deb
-    ANALYSIS_DIR=$(mktemp -d)
-    cd "$ANALYSIS_DIR"
-    ar x "$SOURCE_PATH"
-    
-    if [ -f data.tar.xz ]; then
-        tar xJf data.tar.xz
-    elif [ -f data.tar.gz ]; then
-        tar xzf data.tar.gz
-    elif [ -f data.tar.zst ]; then
-        tar --zstd -xf data.tar.zst
-    fi
-        ENHANCED_DEPS=$(gather_dependencies_enhanced "$SOURCE_PATH" "$CONTROL_INFO")
-    
-    if [ -n "$ENHANCED_DEPS" ]; then
-        while IFS= read -r dep; do
-            [ -n "$dep" ] && FINAL_DEPS+=("$dep")
-        done <<< "$ENHANCED_DEPS"
-    fi
-    
-    cd - >/dev/null
-    rm -rf "$ANALYSIS_DIR"
-else
-    # Original dependency code 
-    if [ "$SOURCE_TYPE" == "local" ]; then
-    # Run Python analyzer
-    create_dependency_analyzer
-    
-    echo "Running binary analysis..."
-    DETECTED=$(python3 /tmp/analyzer "$ANALYSIS_DIR" 2>&1)
-    
-    # Parse output
-    DEPS_LINE=$(echo "$DETECTED" | tail -1)
-    
-    if [ -n "$DEPS_LINE" ] && [[ ! "$DEPS_LINE" =~ "Error" ]]; then
-        IFS=',' read -ra DEPS_ARRAY <<< "$DEPS_LINE"
-        FINAL_DEPS+=("${DEPS_ARRAY[@]}")
-    fi
-fi
-
-# Parse control file dependencies
-if [ -n "$CONTROL_INFO" ]; then
-    echo "Translating Debian dependencies..."
-    CONTROL_DEPS=$(echo "$CONTROL_INFO" | grep "^Depends:" | cut -d: -f2- | sed 's/,/ /g; s/ *([^)]*)//g' | xargs)
-    
-    for deb_dep in $CONTROL_DEPS; do
-        arch_dep=$(translate_deb_package "$deb_dep")
-        [ "$arch_dep" != "$deb_dep" ] && echo "  $deb_dep → $arch_dep"
-        FINAL_DEPS+=("$arch_dep")
-    done
-fi
-
-# Allow manual additions
-echo ""
-CURRENT=$(IFS=,; echo "${FINAL_DEPS[*]}")
-read -p "Dependencies [$CURRENT]: " manual_deps
-manual_deps=${manual_deps:-$CURRENT}
-
-if [ -n "$manual_deps" ]; then
-    IFS=',' read -ra FINAL_DEPS <<< "$manual_deps"
-fi
-
-# Deduplicate
-FINAL_DEPS=($(printf '%s\n' "${FINAL_DEPS[@]}" | sort -u))
-
-# Build depends array
-depends_str="depends=("
-for dep in "${FINAL_DEPS[@]}"; do
-    dep=$(echo "$dep" | xargs)
-    [ -n "$dep" ] && depends_str+="'$dep' "
-done
-depends_str+=")"
-
-# Build configuration
-echo ""
-read -p "📁 Build directory [/tmp/deb2arch-build]: " build_dir
-build_dir=${build_dir:-/tmp/deb2arch-build}
-build_dir=$(echo "$build_dir" | sed "s/^['\"]//; s/['\"]$//")
-build_dir="${build_dir/#\~/$HOME}"
-
-mkdir -p "$build_dir"
-
-read -p "🚀 Install after build? [y/N]: " install_pkg
-install_pkg=${install_pkg:-n}
-
-# Generate PKGBUILD
-echo ""
-echo "✍️  Generating PKGBUILD..."
-
-cat > "${build_dir}/PKGBUILD" << EOF
-# Maintainer: $maintainer
-pkgname=$pkgname
-pkgver=$pkgver
-pkgrel=$pkgrel
-pkgdesc="$pkgdesc"
-arch=('$arch')
-url="$url"
-license=('$license')
-$depends_str
-source=("file://$SOURCE_PATH")
-sha256sums=('SKIP')
-
-package() {
-    cd "\${srcdir}"
-    
-    # Extract .deb
-    ar x "$DEB_FILENAME"
-    
-    # Extract data archive
-    if [ -f data.tar.xz ]; then
-        bsdtar -xf data.tar.xz -C "\${pkgdir}"
-    elif [ -f data.tar.gz ]; then
-        bsdtar -xf data.tar.gz -C "\${pkgdir}"
-    elif [ -f data.tar.zst ]; then
-        bsdtar -xf data.tar.zst -C "\${pkgdir}"
-    fi
-    
-    # Fix all permissions
-    find "\${pkgdir}" -type d -exec chmod 755 {} +
-    find "\${pkgdir}" -type f -exec chmod 644 {} +
-    
-    # Make binaries executable
-    for dir in usr/bin usr/sbin bin sbin opt; do
-        [ -d "\${pkgdir}/\${dir}" ] && find "\${pkgdir}/\${dir}" -type f -exec chmod 755 {} +
-    done
-    
-    # Fix library permissions
-    find "\${pkgdir}" -type f -name "*.so*" -exec chmod 755 {} + 2>/dev/null || true
-}
-EOF
-
-if [ $ENHANCEMENTS_AVAILABLE -eq 0 ]; then
-    enhance_pkgbuild_generation "$build_dir" "$SOURCE_PATH" "$pkgname"
-fi
-
-echo -e "${GREEN}✅ PKGBUILD created: ${build_dir}/PKGBUILD${NC}"
-
-# Build
-echo ""
-read -p "🔨 Build now? [Y/n]: " build_now
-build_now=${build_now:-y}
-
-if [[ "$build_now" =~ ^[Yy]$ ]]; then
-    cd "$build_dir"
-    
-    echo -e "${CYAN}Building package (this may take a while)...${NC}"
-    
-    if makepkg -sf --noconfirm; then
-        echo -e "${GREEN}✅ Build successful!${NC}"
-        
-        PKG_FILE=$(ls -t ${pkgname}-${pkgver}-${pkgrel}-*.pkg.tar.zst 2>/dev/null | head -1)
-        echo -e "${CYAN}📦 Package: ${build_dir}/${PKG_FILE}${NC}"
-        
-        if [[ "$install_pkg" =~ ^[Yy]$ ]]; then
-            echo ""
-            echo -e "${CYAN}Installing package...${NC}"
-            sudo pacman -U "${PKG_FILE}" --noconfirm
-            echo -e "${GREEN}✅ Installed!${NC}"
-        fi
-    else
-        echo -e "${RED}❌ Build failed${NC}"
-        echo "Check ${build_dir} for details"
-        exit 1
-    fi
-else
-    echo "Build skipped. To build manually:"
-    echo "  cd $build_dir && makepkg -sf"
-fi
-
-echo ""
-echo -e "${GREEN}✨ Done!${NC}"
+python3 "${SCRIPT_DIR}/deb2arch.py"
