@@ -15,6 +15,15 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+if [ -f "${SCRIPT_DIR}/integration" ]; then
+    source "${SCRIPT_DIR}/integration"
+    install_enhancement_module 2>/dev/null
+    ENHANCEMENTS_AVAILABLE=$?
+else
+    ENHANCEMENTS_AVAILABLE=1
+fi
+
 # Check for updates
 check_for_updates() {
     # Only check if we're in a git repo
@@ -129,7 +138,7 @@ install_core_deps
 
 # Python dependency analyzer with pip fallback
 create_dependency_analyzer() {
-    cat > /tmp/deb2arch_analyzer.py << 'PYEOF'
+    cat > /tmp/analyzer << 'PYEOF'
 #!/usr/bin/env python3
 import subprocess
 import sys
@@ -342,25 +351,22 @@ def main():
 if __name__ == '__main__':
     main()
 PYEOF
-    chmod +x /tmp/deb2arch_analyzer.py
+    chmod +x /tmp/analyzer
 }
 
 # Extract package control info
 extract_deb_info() {
     local deb=$1
-    local tmp=$(mktemp -d)
     
+    # Try enhanced extraction if available
+    if [ $ENHANCEMENTS_AVAILABLE -eq 0 ]; then
+        extract_deb_info_enhanced "$deb" && return 0
+    fi
+    
+    # Original fallback code (keep your existing code here)
+    local tmp=$(mktemp -d)
     cd "$tmp"
     ar x "$deb" 2>/dev/null || return 1
-    
-    # Extract control
-    if [ -f control.tar.gz ]; then
-        tar xzf control.tar.gz ./control 2>/dev/null
-    elif [ -f control.tar.xz ]; then
-        tar xJf control.tar.xz ./control 2>/dev/null
-    elif [ -f control.tar.zst ]; then
-        tar --zstd -xf control.tar.zst ./control 2>/dev/null
-    fi
     
     [ -f control ] && cat control
     cd - >/dev/null
@@ -475,10 +481,10 @@ echo ""
 echo -e "${CYAN}🔬 Analyzing dependencies...${NC}"
 
 FINAL_DEPS=()
-
-if [ "$SOURCE_TYPE" == "local" ]; then
-    # Extract .deb to temp location
-    echo "Extracting .deb for analysis..."
+if [ $ENHANCEMENTS_AVAILABLE -eq 0 ] && [ "$SOURCE_TYPE" == "local" ]; then
+    echo -e "${CYAN}🧬 Using alien-inspired dependency analysis...${NC}"
+    
+    # Extract .deb
     ANALYSIS_DIR=$(mktemp -d)
     cd "$ANALYSIS_DIR"
     ar x "$SOURCE_PATH"
@@ -490,12 +496,24 @@ if [ "$SOURCE_TYPE" == "local" ]; then
     elif [ -f data.tar.zst ]; then
         tar --zstd -xf data.tar.zst
     fi
+        ENHANCED_DEPS=$(gather_dependencies_enhanced "$SOURCE_PATH" "$CONTROL_INFO")
     
+    if [ -n "$ENHANCED_DEPS" ]; then
+        while IFS= read -r dep; do
+            [ -n "$dep" ] && FINAL_DEPS+=("$dep")
+        done <<< "$ENHANCED_DEPS"
+    fi
+    
+    cd - >/dev/null
+    rm -rf "$ANALYSIS_DIR"
+else
+    # Original dependency code 
+    if [ "$SOURCE_TYPE" == "local" ]; then
     # Run Python analyzer
     create_dependency_analyzer
     
     echo "Running binary analysis..."
-    DETECTED=$(python3 /tmp/deb2arch_analyzer.py "$ANALYSIS_DIR" 2>&1)
+    DETECTED=$(python3 /tmp/analyzer "$ANALYSIS_DIR" 2>&1)
     
     # Parse output
     DEPS_LINE=$(echo "$DETECTED" | tail -1)
@@ -504,9 +522,6 @@ if [ "$SOURCE_TYPE" == "local" ]; then
         IFS=',' read -ra DEPS_ARRAY <<< "$DEPS_LINE"
         FINAL_DEPS+=("${DEPS_ARRAY[@]}")
     fi
-    
-    cd - >/dev/null
-    rm -rf "$ANALYSIS_DIR"
 fi
 
 # Parse control file dependencies
@@ -599,6 +614,10 @@ package() {
     find "\${pkgdir}" -type f -name "*.so*" -exec chmod 755 {} + 2>/dev/null || true
 }
 EOF
+
+if [ $ENHANCEMENTS_AVAILABLE -eq 0 ]; then
+    enhance_pkgbuild_generation "$build_dir" "$SOURCE_PATH" "$pkgname"
+fi
 
 echo -e "${GREEN}✅ PKGBUILD created: ${build_dir}/PKGBUILD${NC}"
 
