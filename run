@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+
+# deb2arch - Interactive .deb to Arch Package Converter
+# Engineered by: oxbv1 | 0xb0rn3
+# GitHub: github.com/0xb0rn3/deb2arch
+# Usage: ./run
+
+set -e
+
+echo "╔════════════════════════════════════════════════╗"
+echo "║      deb2arch - .deb to Arch Converter        ║"
+echo "║      Engineered by: oxbv1 | 0xb0rn3           ║"
+echo "╚════════════════════════════════════════════════╝"
+echo ""
+
+# Check dependencies
+for cmd in ar bsdtar makepkg; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "Error: $cmd is required but not installed."
+        exit 1
+    fi
+done
+
+# Function to extract package info from .deb
+extract_deb_info() {
+    local debfile=$1
+    local tmpdir=$(mktemp -d)
+    
+    cd "$tmpdir"
+    ar x "$debfile" 2>/dev/null || true
+    
+    if [ -f control.tar.gz ]; then
+        tar xzf control.tar.gz ./control 2>/dev/null || true
+    elif [ -f control.tar.xz ]; then
+        tar xJf control.tar.xz ./control 2>/dev/null || true
+    elif [ -f control.tar.zst ]; then
+        tar --zstd -xf control.tar.zst ./control 2>/dev/null || true
+    fi
+    
+    if [ -f control ]; then
+        cat control
+    fi
+    
+    cd - > /dev/null
+    rm -rf "$tmpdir"
+}
+
+# Get package source
+echo "📦 Package Source"
+echo "1) Local .deb file"
+echo "2) URL to .deb file"
+read -p "Select option [1-2]: " source_type
+
+if [ "$source_type" == "1" ]; then
+    read -p "Enter path to .deb file: " deb_path
+    deb_path=$(realpath "$deb_path" 2>/dev/null || echo "$deb_path")
+    
+    if [ ! -f "$deb_path" ]; then
+        echo "Error: File not found: $deb_path"
+        exit 1
+    fi
+    
+    SOURCE_TYPE="local"
+    SOURCE_PATH="$deb_path"
+    DEB_FILENAME=$(basename "$deb_path")
+    
+    echo ""
+    echo "🔍 Extracting package information..."
+    CONTROL_INFO=$(extract_deb_info "$deb_path")
+    
+elif [ "$source_type" == "2" ]; then
+    read -p "Enter URL to .deb file: " deb_url
+    SOURCE_TYPE="url"
+    SOURCE_PATH="$deb_url"
+    DEB_FILENAME=$(basename "$deb_url")
+    
+    echo ""
+    echo "⚠️  Cannot extract info from remote .deb"
+    CONTROL_INFO=""
+else
+    echo "Invalid option"
+    exit 1
+fi
+
+echo ""
+echo "📝 Package Information"
+
+# Try to suggest package name from filename
+SUGGESTED_NAME=$(echo "$DEB_FILENAME" | sed 's/_.*//; s/\.deb$//' | tr '[:upper:]' '[:lower:]')
+read -p "Package name [$SUGGESTED_NAME]: " pkgname
+pkgname=${pkgname:-$SUGGESTED_NAME}
+
+# Try to extract version from .deb filename or control
+SUGGESTED_VER=$(echo "$DEB_FILENAME" | sed 's/.*_\([0-9][0-9.]*\).*/\1/')
+if [ -n "$CONTROL_INFO" ]; then
+    CONTROL_VER=$(echo "$CONTROL_INFO" | grep "^Version:" | awk '{print $2}' | cut -d- -f1)
+    [ -n "$CONTROL_VER" ] && SUGGESTED_VER="$CONTROL_VER"
+fi
+read -p "Version [$SUGGESTED_VER]: " pkgver
+pkgver=${pkgver:-$SUGGESTED_VER}
+
+read -p "Release [1]: " pkgrel
+pkgrel=${pkgrel:-1}
+
+read -p "Architecture [x86_64]: " arch
+arch=${arch:-x86_64}
+
+# Try to extract description
+if [ -n "$CONTROL_INFO" ]; then
+    CONTROL_DESC=$(echo "$CONTROL_INFO" | grep "^Description:" | cut -d: -f2- | xargs)
+fi
+read -p "Description [$CONTROL_DESC]: " pkgdesc
+pkgdesc=${pkgdesc:-$CONTROL_DESC}
+
+read -p "URL [https://example.com]: " url
+url=${url:-https://example.com}
+
+read -p "License [custom]: " license
+license=${license:-custom}
+
+echo ""
+echo "🔗 Dependencies (comma-separated, or press Enter to skip)"
+if [ -n "$CONTROL_INFO" ]; then
+    CONTROL_DEPS=$(echo "$CONTROL_INFO" | grep "^Depends:" | cut -d: -f2- | sed 's/,/ /g; s/ *([^)]*)//g; s/  */ /g' | xargs)
+    echo "Detected from .deb: $CONTROL_DEPS"
+fi
+read -p "Dependencies: " depends_input
+if [ -n "$depends_input" ]; then
+    IFS=',' read -ra DEPS <<< "$depends_input"
+    depends_array="depends=("
+    for dep in "${DEPS[@]}"; do
+        dep=$(echo "$dep" | xargs)
+        depends_array+="'$dep' "
+    done
+    depends_array+=")"
+else
+    depends_array="depends=()"
+fi
+
+echo ""
+read -p "📁 Build directory [/tmp/deb2pkg-build]: " build_dir
+build_dir=${build_dir:-/tmp/deb2pkg-build}
+
+read -p "💾 Save PKGBUILD to [${build_dir}/PKGBUILD]: " pkgbuild_save
+pkgbuild_save=${pkgbuild_save:-${build_dir}/PKGBUILD}
+
+read -p "📦 Save built package to [${build_dir}]: " pkg_save_dir
+pkg_save_dir=${pkg_save_dir:-${build_dir}}
+
+echo ""
+read -p "🚀 Install package after building? [y/N]: " install_pkg
+install_pkg=${install_pkg:-n}
+
+# Create build directory
+mkdir -p "$build_dir"
+mkdir -p "$pkg_save_dir"
+
+# Generate PKGBUILD
+echo ""
+echo "✍️  Generating PKGBUILD..."
+
+cat > "$pkgbuild_save" << EOF
+# Maintainer: oxbv1 | 0xb0rn3 (github.com/0xb0rn3/deb2arch)
+pkgname=$pkgname
+pkgver=$pkgver
+pkgrel=$pkgrel
+pkgdesc="$pkgdesc"
+arch=('$arch')
+url="$url"
+license=('$license')
+$depends_array
+EOF
+
+if [ "$SOURCE_TYPE" == "local" ]; then
+    cat >> "$pkgbuild_save" << EOF
+source=("file://$SOURCE_PATH")
+sha256sums=('SKIP')
+
+package() {
+    cd "\${srcdir}"
+    
+    # Extract .deb
+    ar x "$DEB_FILENAME"
+    
+    # Extract data
+    if [ -f data.tar.xz ]; then
+        bsdtar -xf data.tar.xz -C "\${pkgdir}"
+    elif [ -f data.tar.gz ]; then
+        bsdtar -xf data.tar.gz -C "\${pkgdir}"
+    elif [ -f data.tar.zst ]; then
+        bsdtar -xf data.tar.zst -C "\${pkgdir}"
+    fi
+    
+    # Fix permissions
+    find "\${pkgdir}" -type d -exec chmod 755 {} +
+    find "\${pkgdir}" -type f -exec chmod 644 {} +
+    find "\${pkgdir}/usr/bin" -type f -exec chmod 755 {} + 2>/dev/null || true
+}
+EOF
+else
+    cat >> "$pkgbuild_save" << EOF
+source=("$SOURCE_PATH")
+sha256sums=('SKIP')
+
+package() {
+    cd "\${srcdir}"
+    
+    # Extract .deb
+    ar x "$DEB_FILENAME"
+    
+    # Extract data
+    if [ -f data.tar.xz ]; then
+        bsdtar -xf data.tar.xz -C "\${pkgdir}"
+    elif [ -f data.tar.gz ]; then
+        bsdtar -xf data.tar.gz -C "\${pkgdir}"
+    elif [ -f data.tar.zst ]; then
+        bsdtar -xf data.tar.zst -C "\${pkgdir}"
+    fi
+    
+    # Fix permissions
+    find "\${pkgdir}" -type d -exec chmod 755 {} +
+    find "\${pkgdir}" -type f -exec chmod 644 {} +
+    find "\${pkgdir}/usr/bin" -type f -exec chmod 755 {} + 2>/dev/null || true
+}
+EOF
+fi
+
+echo "✅ PKGBUILD created: $pkgbuild_save"
+echo ""
+echo "════════════════════════════════════════════════"
+cat "$pkgbuild_save"
+echo "════════════════════════════════════════════════"
+echo ""
+
+# Build package
+read -p "🔨 Build package now? [Y/n]: " build_now
+build_now=${build_now:-y}
+
+if [[ "$build_now" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "🔨 Building package..."
+    cd "$build_dir"
+    
+    if makepkg -sf --noconfirm; then
+        echo ""
+        echo "✅ Package built successfully!"
+        
+        # Move package to save directory
+        PKG_FILE=$(ls -t ${pkgname}-${pkgver}-${pkgrel}-*.pkg.tar.zst 2>/dev/null | head -1)
+        
+        if [ -n "$PKG_FILE" ] && [ "$pkg_save_dir" != "$build_dir" ]; then
+            mv "$PKG_FILE" "$pkg_save_dir/"
+            echo "📦 Package saved to: ${pkg_save_dir}/${PKG_FILE}"
+            PKG_FILE="${pkg_save_dir}/${PKG_FILE}"
+        else
+            echo "📦 Package location: ${build_dir}/${PKG_FILE}"
+        fi
+        
+        # Install if requested
+        if [[ "$install_pkg" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "🚀 Installing package..."
+            sudo pacman -U "$PKG_FILE" --noconfirm
+            echo "✅ Package installed!"
+        fi
+    else
+        echo "❌ Build failed!"
+        exit 1
+    fi
+else
+    echo "Build skipped. To build manually:"
+    echo "  cd $build_dir"
+    echo "  makepkg -sf"
+fi
+
+echo ""
+echo "✨ Done!"
