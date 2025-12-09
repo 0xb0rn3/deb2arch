@@ -1,0 +1,443 @@
+#!/usr/bin/env bash
+# deb2arch Enhancement Integration Functions
+# Add these functions to your existing 'run' script
+
+# ============================================================================
+# ENHANCEMENT MODULE INSTALLER
+# ============================================================================
+
+install_enhancement_module() {
+    local script_dir="$(dirname "$(readlink -f "$0")")"
+    local enhancer_path="${script_dir}/enhancer"
+    
+    # Check if module exists
+    if [ ! -f "$enhancer_path" ]; then
+        echo -e "${YELLOW}⚠️  Enhancement module not found${NC}"
+        echo "Please place enhancer in the same directory as this script"
+        return 1
+    fi
+    
+    # Make executable
+    chmod +x "$enhancer_path" 2>/dev/null
+    
+    # Verify Python3
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${RED}Python3 required but not found${NC}"
+        return 1
+    fi
+    
+    return 0
+}
+
+# ============================================================================
+# ENHANCED ANALYSIS FUNCTIONS
+# ============================================================================
+
+enhanced_analyze_deb() {
+    local deb_path="$1"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ ! -f "$enhancer" ]; then
+        return 1
+    fi
+    
+    echo -e "${CYAN}🔬 Running deep analysis...${NC}"
+    
+    # Run analysis and capture JSON output
+    local analysis=$(python3 "$enhancer" analyze "$deb_path" 2>/dev/null)
+    
+    if [ $? -eq 0 ] && [ -n "$analysis" ]; then
+        echo "$analysis"
+        return 0
+    fi
+    
+    return 1
+}
+
+enhanced_extract_deps() {
+    local deb_path="$1"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ ! -f "$enhancer" ]; then
+        return 1
+    fi
+    
+    # Extract and translate dependencies
+    local deps=$(python3 "$enhancer" deps "$deb_path" 2>/dev/null)
+    
+    if [ -n "$deps" ]; then
+        echo "$deps"
+        return 0
+    fi
+    
+    return 1
+}
+
+enhanced_extract_scripts() {
+    local deb_path="$1"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ ! -f "$enhancer" ]; then
+        return 1
+    fi
+    
+    # Extract maintainer scripts as JSON
+    local scripts=$(python3 "$enhancer" scripts "$deb_path" 2>/dev/null)
+    
+    if [ -n "$scripts" ]; then
+        echo "$scripts"
+        return 0
+    fi
+    
+    return 1
+}
+
+enhanced_get_metadata() {
+    local deb_path="$1"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ ! -f "$enhancer" ]; then
+        return 1
+    fi
+    
+    # Get enhanced metadata for PKGBUILD
+    local metadata=$(python3 "$enhancer" enhance "$deb_path" 2>/dev/null)
+    
+    if [ -n "$metadata" ]; then
+        echo "$metadata"
+        return 0
+    fi
+    
+    return 1
+}
+
+# ============================================================================
+# INTEGRATION INTO EXISTING WORKFLOW
+# ============================================================================
+
+# Enhanced version of your existing extract_deb_info function
+extract_deb_info_enhanced() {
+    local deb=$1
+    
+    # Try enhanced extraction first
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ -f "$enhancer" ] && command -v python3 &>/dev/null; then
+        local enhanced_data=$(python3 "$enhancer" analyze "$deb" 2>/dev/null)
+        
+        if [ -n "$enhanced_data" ]; then
+            # Parse JSON and extract control data
+            echo "$enhanced_data" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'Control Data' in str(data):
+        for line in str(data).split('\n'):
+            print(line)
+except:
+    pass
+" 2>/dev/null
+            return 0
+        fi
+    fi
+    
+    # Fallback to original method
+    local tmp=$(mktemp -d)
+    cd "$tmp"
+    ar x "$deb" 2>/dev/null || return 1
+    
+    if [ -f control.tar.gz ]; then
+        tar xzf control.tar.gz ./control 2>/dev/null
+    elif [ -f control.tar.xz ]; then
+        tar xJf control.tar.xz ./control 2>/dev/null
+    elif [ -f control.tar.zst ]; then
+        tar --zstd -xf control.tar.zst ./control 2>/dev/null
+    fi
+    
+    [ -f control ] && cat control
+    cd - >/dev/null
+    rm -rf "$tmp"
+}
+
+# Enhanced dependency gathering (replaces/augments existing logic)
+gather_dependencies_enhanced() {
+    local deb_path="$1"
+    local control_info="$2"
+    
+    local all_deps=()
+    
+    # Try enhanced dependency extraction
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ -f "$enhancer" ]; then
+        echo -e "${CYAN}🧬 Using enhanced dependency analysis...${NC}"
+        
+        local enhanced_deps=$(python3 "$enhancer" deps "$deb_path" 2>/dev/null)
+        
+        if [ -n "$enhanced_deps" ]; then
+            IFS=',' read -ra DEPS_ARRAY <<< "$enhanced_deps"
+            all_deps+=("${DEPS_ARRAY[@]}")
+            
+            echo -e "${GREEN}✓ Found ${#DEPS_ARRAY[@]} translated dependencies${NC}"
+        fi
+    fi
+    
+    # Merge with binary analysis (your existing code)
+    if [ -n "$ANALYSIS_DIR" ] && [ -d "$ANALYSIS_DIR" ]; then
+        create_dependency_analyzer
+        local binary_deps=$(python3 /tmp/analyzer "$ANALYSIS_DIR" 2>&1 | tail -1)
+        
+        if [ -n "$binary_deps" ] && [[ ! "$binary_deps" =~ "Error" ]]; then
+            IFS=',' read -ra BIN_DEPS <<< "$binary_deps"
+            all_deps+=("${BIN_DEPS[@]}")
+        fi
+    fi
+    
+    # Deduplicate and sort
+    printf '%s\n' "${all_deps[@]}" | sort -u
+}
+
+# Generate enhanced PKGBUILD with install scripts
+generate_enhanced_pkgbuild() {
+    local build_dir="$1"
+    local deb_path="$2"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    # Get enhanced metadata
+    if [ -f "$enhancer" ]; then
+        echo -e "${CYAN}📋 Generating enhanced PKGBUILD...${NC}"
+        
+        local metadata=$(python3 "$enhancer" enhance "$deb_path" 2>/dev/null)
+        
+        if [ -n "$metadata" ]; then
+            # Parse enhanced metadata
+            local enhanced_desc=$(echo "$metadata" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'pkgdesc' in data:
+        print(data['pkgdesc'])
+except:
+    pass
+" 2>/dev/null)
+            
+            local enhanced_url=$(echo "$metadata" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'url' in data:
+        print(data['url'])
+except:
+    pass
+" 2>/dev/null)
+            
+            local enhanced_conflicts=$(echo "$metadata" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'conflicts' in data:
+        print(' '.join([\"'%s'\" % c for c in data['conflicts']]))
+except:
+    pass
+" 2>/dev/null)
+            
+            local enhanced_provides=$(echo "$metadata" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'provides' in data:
+        print(' '.join([\"'%s'\" % p for p in data['provides']]))
+except:
+    pass
+" 2>/dev/null)
+            
+            # Export for use in PKGBUILD generation
+            export ENHANCED_DESC="$enhanced_desc"
+            export ENHANCED_URL="$enhanced_url"
+            export ENHANCED_CONFLICTS="$enhanced_conflicts"
+            export ENHANCED_PROVIDES="$enhanced_provides"
+            
+            echo -e "${GREEN}✓ Enhanced metadata extracted${NC}"
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# Generate .install file for pre/post scripts
+generate_install_scripts() {
+    local build_dir="$1"
+    local deb_path="$2"
+    local pkgname="$3"
+    local enhancer="$(dirname "$0")/enhancer"
+    
+    if [ ! -f "$enhancer" ]; then
+        return 1
+    fi
+    
+    echo -e "${CYAN}📝 Checking for maintainer scripts...${NC}"
+    
+    # Extract scripts
+    local scripts_json=$(python3 "$enhancer" scripts "$deb_path" 2>/dev/null)
+    
+    if [ -n "$scripts_json" ] && [ "$scripts_json" != "{}" ]; then
+        local install_file="${build_dir}/${pkgname}.install"
+        
+        # Convert scripts to .install format
+        python3 -c "
+import json, sys, re
+
+scripts = json.loads('$scripts_json')
+
+def indent(text):
+    lines = text.split('\n')
+    if lines and lines[0].startswith('#!'):
+        lines = lines[1:]
+    return '\n'.join('    ' + line if line.strip() else '' for line in lines)
+
+def convert_postinst(script):
+    # Basic Debian -> Arch conversions
+    script = re.sub(r'update-rc\.d', 'systemctl enable', script)
+    script = re.sub(r'invoke-rc\.d\s+(\S+)\s+start', r'systemctl start \1', script)
+    return script
+
+if 'postinst' in scripts and scripts['postinst']:
+    print('post_install() {')
+    print(indent(convert_postinst(scripts['postinst'])))
+    print('}\n')
+
+if 'prerm' in scripts and scripts['prerm']:
+    print('pre_remove() {')
+    script = re.sub(r'invoke-rc\.d\s+(\S+)\s+stop', r'systemctl stop \1', scripts['prerm'])
+    print(indent(script))
+    print('}\n')
+
+if 'postrm' in scripts and scripts['postrm']:
+    print('post_remove() {')
+    print(indent(scripts['postrm']))
+    print('}\n')
+" > "$install_file" 2>/dev/null
+        
+        if [ -s "$install_file" ]; then
+            echo -e "${GREEN}✓ Created ${pkgname}.install${NC}"
+            return 0
+        else
+            rm -f "$install_file"
+        fi
+    fi
+    
+    return 1
+}
+
+# ============================================================================
+# MODIFY YOUR EXISTING PKGBUILD GENERATION
+# ============================================================================
+
+# Add this section to your existing PKGBUILD generation in the 'run' script
+# Insert after line where you write "# Generate PKGBUILD"
+
+enhance_pkgbuild_generation() {
+    local build_dir="$1"
+    local deb_path="$2"
+    local pkgname="$3"
+    
+    # Try to generate enhanced content
+    generate_enhanced_pkgbuild "$build_dir" "$deb_path"
+    
+    # Try to generate .install file
+    if generate_install_scripts "$build_dir" "$deb_path" "$pkgname"; then
+        # Add install= line to PKGBUILD
+        sed -i "/^license=/a install=${pkgname}.install" "${build_dir}/PKGBUILD"
+    fi
+    
+    # Use enhanced metadata if available
+    if [ -n "$ENHANCED_DESC" ]; then
+        sed -i "s|^pkgdesc=.*|pkgdesc=\"$ENHANCED_DESC\"|" "${build_dir}/PKGBUILD"
+    fi
+    
+    if [ -n "$ENHANCED_URL" ]; then
+        sed -i "s|^url=.*|url=\"$ENHANCED_URL\"|" "${build_dir}/PKGBUILD"
+    fi
+    
+    if [ -n "$ENHANCED_CONFLICTS" ]; then
+        sed -i "/^depends=/a conflicts=($ENHANCED_CONFLICTS)" "${build_dir}/PKGBUILD"
+    fi
+    
+    if [ -n "$ENHANCED_PROVIDES" ]; then
+        sed -i "/^depends=/a provides=($ENHANCED_PROVIDES)" "${build_dir}/PKGBUILD"
+    fi
+}
+
+# ============================================================================
+# USAGE EXAMPLE - INSERT INTO YOUR EXISTING 'run' SCRIPT
+# ============================================================================
+# 
+# In your existing script, add these calls at appropriate points:
+#
+# 1. After sourcing/defining functions (near top):
+#    install_enhancement_module || echo "Running without enhancements"
+#
+# 2. Replace or augment extract_deb_info with:
+#    CONTROL_INFO=$(extract_deb_info_enhanced "$deb_path")
+#
+# 3. Replace dependency gathering section with:
+#    ENHANCED_DEPS=$(gather_dependencies_enhanced "$deb_path" "$CONTROL_INFO")
+#    if [ -n "$ENHANCED_DEPS" ]; then
+#        IFS=$'\n' read -d '' -ra FINAL_DEPS <<< "$ENHANCED_DEPS"
+#    fi
+#
+# 4. After generating PKGBUILD, add:
+#    enhance_pkgbuild_generation "$build_dir" "$SOURCE_PATH" "$pkgname"
+#
+# ============================================================================
+
+# ============================================================================
+# STANDALONE TEST FUNCTION
+# ============================================================================
+
+test_enhancements() {
+    local deb_path="$1"
+    
+    if [ ! -f "$deb_path" ]; then
+        echo "Usage: test_enhancements <path-to.deb>"
+        return 1
+    fi
+    
+    echo "Testing deb2arch enhancements on: $deb_path"
+    echo ""
+    
+    install_enhancement_module || {
+        echo "Enhancement module not available"
+        return 1
+    }
+    
+    echo "=== Enhanced Analysis ==="
+    enhanced_analyze_deb "$deb_path" | head -20
+    echo ""
+    
+    echo "=== Dependency Translation ==="
+    enhanced_extract_deps "$deb_path"
+    echo ""
+    
+    echo "=== Maintainer Scripts ==="
+    enhanced_extract_scripts "$deb_path" | python3 -m json.tool 2>/dev/null | head -30
+    echo ""
+    
+    echo "=== Enhanced Metadata ==="
+    enhanced_get_metadata "$deb_path" | python3 -m json.tool 2>/dev/null
+    echo ""
+}
+
+# Export functions for use
+export -f install_enhancement_module
+export -f enhanced_analyze_deb
+export -f enhanced_extract_deps
+export -f enhanced_extract_scripts
+export -f enhanced_get_metadata
+export -f extract_deb_info_enhanced
+export -f gather_dependencies_enhanced
+export -f generate_enhanced_pkgbuild
+export -f generate_install_scripts
+export -f enhance_pkgbuild_generation
+export -f test_enhancements
