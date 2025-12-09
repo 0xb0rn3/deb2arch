@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+# Version info
+VERSION="2.0.0"
+REPO_URL="https://github.com/0xb0rn3/deb2arch"
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -9,11 +15,96 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Check for updates
+check_for_updates() {
+    # Only check if we're in a git repo
+    if [ -d "${SCRIPT_DIR}/.git" ]; then
+        echo -ne "${CYAN}🔍 Checking for updates...${NC}"
+        
+        # Fetch latest from origin
+        git -C "${SCRIPT_DIR}" fetch origin main 2>/dev/null || {
+            echo -e "\r${YELLOW}⚠️  Could not check for updates (no internet?)${NC}"
+            return
+        }
+        
+        # Compare local and remote
+        LOCAL=$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null)
+        REMOTE=$(git -C "${SCRIPT_DIR}" rev-parse origin/main 2>/dev/null)
+        
+        if [ "$LOCAL" != "$REMOTE" ]; then
+            echo -e "\r${YELLOW}📦 Update available!${NC}                    "
+            echo -e "${GREEN}New version available on GitHub${NC}"
+            echo ""
+            read -p "Update now? [Y/n]: " do_update
+            do_update=${do_update:-y}
+            
+            if [[ "$do_update" =~ ^[Yy]$ ]]; then
+                echo -e "${CYAN}Updating...${NC}"
+                
+                # Stash local changes if any
+                git -C "${SCRIPT_DIR}" stash push -m "Auto-stash before update" 2>/dev/null || true
+                
+                # Pull latest
+                if git -C "${SCRIPT_DIR}" pull origin main; then
+                    echo -e "${GREEN}✅ Updated successfully!${NC}"
+                    echo -e "${CYAN}Restarting with new version...${NC}"
+                    echo ""
+                    
+                    # Re-exec with new version
+                    exec "$SCRIPT_PATH" "$@"
+                else
+                    echo -e "${RED}❌ Update failed${NC}"
+                    echo "Run manually: cd ${SCRIPT_DIR} && git pull"
+                fi
+            else
+                echo "Update skipped. Run 'git pull' in ${SCRIPT_DIR} to update later."
+                echo ""
+            fi
+        else
+            echo -e "\r${GREEN}✅ You're on the latest version${NC}          "
+            echo ""
+        fi
+    fi
+}
+
+# Handle command line arguments
+case "${1:-}" in
+    --version|-v)
+        echo "deb2arch version $VERSION"
+        echo "Repository: $REPO_URL"
+        exit 0
+        ;;
+    --update|-u)
+        check_for_updates "$@"
+        exit 0
+        ;;
+    --help|-h)
+        echo "deb2arch - .deb to Arch Package Converter"
+        echo ""
+        echo "Usage: $0 [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  -v, --version    Show version information"
+        echo "  -u, --update     Check for updates and update if available"
+        echo "  -h, --help       Show this help message"
+        echo ""
+        echo "Examples:"
+        echo "  $0                    # Run normally (auto-checks for updates)"
+        echo "  $0 --update           # Force update check"
+        echo "  $0 --version          # Show version"
+        exit 0
+        ;;
+esac
+
 echo "╔════════════════════════════════════════════════╗"
 echo "║      deb2arch - .deb to Arch Converter        ║"
 echo "║      Engineered by: oxbv1 | 0xb0rn3           ║"
+echo "║      Version: $VERSION                           ║"
 echo "╚════════════════════════════════════════════════╝"
 echo ""
+
+# Auto-check for updates (non-blocking)
+check_for_updates "$@"
 
 # Install core dependencies
 install_core_deps() {
