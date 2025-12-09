@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # deb2arch - Interactive .deb to Arch Package Converter
 # Engineered by: oxbv1 | 0xb0rn3
@@ -53,10 +53,19 @@ read -p "Select option [1-2]: " source_type
 
 if [ "$source_type" == "1" ]; then
     read -p "Enter path to .deb file: " deb_path
+    
+    # Strip surrounding quotes if present (handles copy-paste)
+    deb_path=$(echo "$deb_path" | sed "s/^['\"]//; s/['\"]$//")
+    
+    # Expand ~ to home directory
+    deb_path="${deb_path/#\~/$HOME}"
+    
+    # Get absolute path
     deb_path=$(realpath "$deb_path" 2>/dev/null || echo "$deb_path")
     
     if [ ! -f "$deb_path" ]; then
         echo "Error: File not found: $deb_path"
+        echo "Tried path: $deb_path"
         exit 1
     fi
     
