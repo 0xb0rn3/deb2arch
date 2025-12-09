@@ -21,6 +21,82 @@ for cmd in ar bsdtar makepkg; do
     fi
 done
 
+# Debian to Arch package name translation map
+declare -A DEB_TO_ARCH=(
+    # Common library mappings
+    ["libxcb-cursor0"]="xcb-util-cursor"
+    ["libncursesw5"]="ncurses"
+    ["libncursesw5-dev"]="ncurses"
+    ["libsox-dev"]="sox"
+    ["libxml2-dev"]="libxml2"
+    ["libcdio-dev"]="libcdio"
+    ["libcdio-cdda-dev"]="libcdio"
+    ["libcdio-paranoia-dev"]="libcdio-paranoia"
+    ["libmagic-dev"]="file"
+    ["libfreetype6-dev"]="freetype2"
+    ["libavahi-gobject-dev"]="avahi"
+    ["libsm-dev"]="libsm"
+    ["libxrender-dev"]="libxrender"
+    ["libfontconfig1-dev"]="fontconfig"
+    ["libxext-dev"]="libxext"
+    ["libgtk-3-0"]="gtk3"
+    ["libnotify4"]="libnotify"
+    ["libnss3"]="nss"
+    ["libxtst6"]="libxtst"
+    ["libatspi2.0-0"]="at-spi2-core"
+    ["libdrm2"]="libdrm"
+    ["libgbm1"]="mesa"
+    ["libxcb-dri3-0"]="libxcb"
+    ["libglib2.0-bin"]="glib2"
+    ["gvfs-bin"]="gvfs"
+    ["pulseaudio"]="pulseaudio"
+    ["libasound2"]="alsa-lib"
+    ["libgmp3-dev"]="gmp"
+    ["build-essential"]="base-devel"
+    
+    # Remove -dev suffix (Arch doesn't split dev packages)
+    [".*-dev$"]="strip-dev"
+)
+
+# Function to translate Debian package name to Arch equivalent
+translate_package() {
+    local deb_pkg=$1
+    
+    # Strip version constraints
+    deb_pkg=$(echo "$deb_pkg" | sed 's/ *([^)]*)//g' | xargs)
+    
+    # Check direct mapping
+    if [ -n "${DEB_TO_ARCH[$deb_pkg]}" ]; then
+        echo "${DEB_TO_ARCH[$deb_pkg]}"
+        return
+    fi
+    
+    # Strip -dev suffix
+    if [[ "$deb_pkg" =~ -dev$ ]]; then
+        echo "${deb_pkg%-dev}"
+        return
+    fi
+    
+    # Strip lib prefix and version numbers for libraries
+    if [[ "$deb_pkg" =~ ^lib.*[0-9]+$ ]]; then
+        echo "$deb_pkg" | sed 's/[0-9]*$//'
+        return
+    fi
+    
+    # Return as-is if no translation found
+    echo "$deb_pkg"
+}
+
+# Function to verify package exists in Arch repos
+verify_arch_package() {
+    local pkg=$1
+    if pacman -Ss "^${pkg}$" &>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Function to extract package info from .deb
 extract_deb_info() {
     local debfile=$1
@@ -132,8 +208,53 @@ echo "🔗 Dependencies (comma-separated, or press Enter to skip)"
 if [ -n "$CONTROL_INFO" ]; then
     CONTROL_DEPS=$(echo "$CONTROL_INFO" | grep "^Depends:" | cut -d: -f2- | sed 's/,/ /g; s/ *([^)]*)//g; s/  */ /g' | xargs)
     echo "Detected from .deb: $CONTROL_DEPS"
+    echo ""
+    echo "🔄 Translating dependencies to Arch equivalents..."
+    
+    # Translate dependencies
+    TRANSLATED_DEPS=()
+    MISSING_DEPS=()
+    for deb_dep in $CONTROL_DEPS; do
+        arch_dep=$(translate_package "$deb_dep")
+        
+        # Skip special cases
+        if [ "$arch_dep" == "strip-dev" ]; then
+            continue
+        fi
+        
+        # Verify package exists
+        if verify_arch_package "$arch_dep"; then
+            TRANSLATED_DEPS+=("$arch_dep")
+            echo "  ✓ $deb_dep → $arch_dep"
+        else
+            # Check if original name exists
+            if verify_arch_package "$deb_dep"; then
+                TRANSLATED_DEPS+=("$deb_dep")
+                echo "  ✓ $deb_dep (no translation needed)"
+            else
+                MISSING_DEPS+=("$deb_dep → $arch_dep?")
+                echo "  ⚠ $deb_dep → $arch_dep (not found in repos, check AUR)"
+            fi
+        fi
+    done
+    
+    if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+        echo ""
+        echo "⚠️  Some dependencies couldn't be verified:"
+        for missing in "${MISSING_DEPS[@]}"; do
+            echo "    - $missing"
+        done
+        echo "You may need to install them from AUR or adjust manually."
+    fi
+    
+    echo ""
+    SUGGESTED_DEPS=$(IFS=, ; echo "${TRANSLATED_DEPS[*]}")
+    read -p "Dependencies [$SUGGESTED_DEPS]: " depends_input
+    depends_input=${depends_input:-$SUGGESTED_DEPS}
+else
+    read -p "Dependencies: " depends_input
 fi
-read -p "Dependencies: " depends_input
+
 if [ -n "$depends_input" ]; then
     IFS=',' read -ra DEPS <<< "$depends_input"
     depends_array="depends=("
@@ -147,21 +268,45 @@ else
 fi
 
 echo ""
-read -p "📁 Build directory [/tmp/deb2pkg-build]: " build_dir
-build_dir=${build_dir:-/tmp/deb2pkg-build}
+read -p "📁 Build directory [/tmp/deb2arch-build]: " build_dir
+build_dir=${build_dir:-/tmp/deb2arch-build}
+
+# Strip quotes from build directory
+build_dir=$(echo "$build_dir" | sed "s/^['\"]//; s/['\"]$//")
+build_dir="${build_dir/#\~/$HOME}"
+
+# Create build directory first
+mkdir -p "$build_dir"
 
 read -p "💾 Save PKGBUILD to [${build_dir}/PKGBUILD]: " pkgbuild_save
-pkgbuild_save=${pkgbuild_save:-${build_dir}/PKGBUILD}
+if [ -z "$pkgbuild_save" ] || [ "$pkgbuild_save" == "${build_dir}/PKGBUILD" ]; then
+    pkgbuild_save="${build_dir}/PKGBUILD"
+else
+    # Strip quotes and expand path
+    pkgbuild_save=$(echo "$pkgbuild_save" | sed "s/^['\"]//; s/['\"]$//")
+    pkgbuild_save="${pkgbuild_save/#\~/$HOME}"
+    
+    # If it's a directory, append PKGBUILD filename
+    if [ -d "$pkgbuild_save" ]; then
+        pkgbuild_save="${pkgbuild_save}/PKGBUILD"
+    fi
+fi
 
 read -p "📦 Save built package to [${build_dir}]: " pkg_save_dir
-pkg_save_dir=${pkg_save_dir:-${build_dir}}
+if [ -z "$pkg_save_dir" ] || [ "$pkg_save_dir" == "${build_dir}" ]; then
+    pkg_save_dir="${build_dir}"
+else
+    # Strip quotes and expand path
+    pkg_save_dir=$(echo "$pkg_save_dir" | sed "s/^['\"]//; s/['\"]$//")
+    pkg_save_dir="${pkg_save_dir/#\~/$HOME}"
+fi
 
 echo ""
 read -p "🚀 Install package after building? [y/N]: " install_pkg
 install_pkg=${install_pkg:-n}
 
-# Create build directory
-mkdir -p "$build_dir"
+# Create directories
+mkdir -p "$(dirname "$pkgbuild_save")"
 mkdir -p "$pkg_save_dir"
 
 # Generate PKGBUILD
@@ -204,6 +349,7 @@ package() {
     find "\${pkgdir}" -type d -exec chmod 755 {} +
     find "\${pkgdir}" -type f -exec chmod 644 {} +
     find "\${pkgdir}/usr/bin" -type f -exec chmod 755 {} + 2>/dev/null || true
+    find "\${pkgdir}/opt" -type f -executable -exec chmod 755 {} + 2>/dev/null || true
 }
 EOF
 else
@@ -230,6 +376,7 @@ package() {
     find "\${pkgdir}" -type d -exec chmod 755 {} +
     find "\${pkgdir}" -type f -exec chmod 644 {} +
     find "\${pkgdir}/usr/bin" -type f -exec chmod 755 {} + 2>/dev/null || true
+    find "\${pkgdir}/opt" -type f -executable -exec chmod 755 {} + 2>/dev/null || true
 }
 EOF
 fi
@@ -250,7 +397,7 @@ if [[ "$build_now" =~ ^[Yy]$ ]]; then
     echo "🔨 Building package..."
     cd "$build_dir"
     
-    if makepkg -sf --noconfirm; then
+    if makepkg -sf --noconfirm 2>&1 | tee /tmp/deb2arch-build.log; then
         echo ""
         echo "✅ Package built successfully!"
         
@@ -274,6 +421,11 @@ if [[ "$build_now" =~ ^[Yy]$ ]]; then
         fi
     else
         echo "❌ Build failed!"
+        echo ""
+        echo "💡 Common issues:"
+        echo "   - Missing dependencies (check AUR for unavailable packages)"
+        echo "   - Edit PKGBUILD manually: $pkgbuild_save"
+        echo "   - Check build log: /tmp/deb2arch-build.log"
         exit 1
     fi
 else
